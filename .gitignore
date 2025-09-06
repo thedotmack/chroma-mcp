@@ -163,9 +163,30 @@ cython_debug/
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#  and can be added to the global gitignore or merged into this file.  For a more nuclear
+#  and can be added to the global gitignore or merged into this project.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
 # PyPI configuration file
 .pypirc
+
+# Node.js dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# TypeScript output
+dist/
+*.tsbuildinfo
+
+# IDE files
+.vscode/
+.idea/
+
+# Environment files
+.chroma_env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
