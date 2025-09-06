@@ -2,64 +2,35 @@
  * Query and Search Tools for Chroma MCP Server
  */
 
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { z } from 'zod';
 import { chromaClientManager } from '../client/chromaClient.js';
-import { DocumentQuery, QueryResult } from '../types/chroma.js';
+import { DefaultEmbeddingFunction } from 'chromadb';
 
-export function registerQueryTools(server: Server) {
+export function registerQueryTools(server: McpServer) {
   // Query Documents
-  server.registerTool(
+  server.tool(
     'queryDocuments',
+    'Query documents from a Chroma collection with advanced filtering',
     {
-      title: 'Query Documents',
-      description: 'Query documents from a Chroma collection with advanced filtering',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          collectionName: {
-            type: 'string',
-            description: 'Name of the collection to query',
-          },
-          queryTexts: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'List of query texts to search for',
-          },
-          nResults: {
-            type: 'number',
-            description: 'Number of results to return per query',
-            default: 5,
-          },
-          where: {
-            type: 'object',
-            description: `Optional metadata filters using Chroma's query operators.
+      collectionName: z.string().describe('Name of the collection to query'),
+      queryTexts: z.array(z.string()).describe('List of query texts to search for'),
+      nResults: z.number().optional().default(5).describe('Number of results to return per query'),
+      where: z.record(z.any()).optional().describe(`Optional metadata filters using Chroma's query operators.
 Examples:
 - Simple equality: {"metadata_field": "value"}
 - Comparison: {"metadata_field": {"$gt": 5}}
 - Logical AND: {"$and": [{"field1": {"$eq": "value1"}}, {"field2": {"$gt": 5}}]}
-- Logical OR: {"$or": [{"field1": {"$eq": "value1"}}, {"field1": {"$eq": "value2"}}]}`,
-          },
-          whereDocument: {
-            type: 'object',
-            description: `Optional document content filters.
+- Logical OR: {"$or": [{"field1": {"$eq": "value1"}}, {"field1": {"$eq": "value2"}}]}`),
+      whereDocument: z.record(z.any()).optional().describe(`Optional document content filters.
 Examples:
 - Contains: {"$contains": "value"}
 - Not contains: {"$not_contains": "value"}
 - Regex: {"$regex": "[a-z]+"}
 - Not regex: {"$not_regex": "[a-z]+"}
 - Logical AND: {"$and": [{"$contains": "value1"}, {"$not_regex": "[a-z]+"}]}
-- Logical OR: {"$or": [{"$regex": "[a-z]+"}, {"$not_contains": "value2"}]}`,
-          },
-          include: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'List of what to include in response',
-            default: ['documents', 'metadatas', 'distances'],
-          },
-        },
-        required: ['collectionName', 'queryTexts'],
-        additionalProperties: false,
-      },
+- Logical OR: {"$or": [{"$regex": "[a-z]+"}, {"$not_contains": "value2"}]}`),
+      include: z.array(z.string()).optional().default(['documents', 'metadatas', 'distances']).describe('List of what to include in response'),
     },
     async ({ collectionName, queryTexts, nResults = 5, where, whereDocument, include = ['documents', 'metadatas', 'distances'] }) => {
       if (!queryTexts || queryTexts.length === 0) {
@@ -68,7 +39,10 @@ Examples:
 
       try {
         const client = await chromaClientManager.getClient();
-        const collection = await client.getCollection({ name: collectionName });
+        const collection = await client.getCollection({ 
+          name: collectionName,
+          embeddingFunction: new DefaultEmbeddingFunction()
+        });
 
         const queryParams: any = {
           queryTexts,
@@ -100,45 +74,16 @@ Examples:
   );
 
   // Similarity Search (alias for query with single text)
-  server.registerTool(
+  server.tool(
     'similaritySearch',
+    'Find similar documents using semantic search',
     {
-      title: 'Similarity Search',
-      description: 'Find similar documents using semantic search',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          collectionName: {
-            type: 'string',
-            description: 'Name of the collection to search',
-          },
-          queryText: {
-            type: 'string',
-            description: 'Query text to search for similar documents',
-          },
-          nResults: {
-            type: 'number',
-            description: 'Number of results to return',
-            default: 5,
-          },
-          where: {
-            type: 'object',
-            description: 'Optional metadata filters',
-          },
-          whereDocument: {
-            type: 'object',
-            description: 'Optional document content filters',
-          },
-          include: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'List of what to include in response',
-            default: ['documents', 'metadatas', 'distances'],
-          },
-        },
-        required: ['collectionName', 'queryText'],
-        additionalProperties: false,
-      },
+      collectionName: z.string().describe('Name of the collection to search'),
+      queryText: z.string().describe('Query text to search for similar documents'),
+      nResults: z.number().optional().default(5).describe('Number of results to return'),
+      where: z.record(z.any()).optional().describe('Optional metadata filters'),
+      whereDocument: z.record(z.any()).optional().describe('Optional document content filters'),
+      include: z.array(z.string()).optional().default(['documents', 'metadatas', 'distances']).describe('List of what to include in response'),
     },
     async ({ collectionName, queryText, nResults = 5, where, whereDocument, include = ['documents', 'metadatas', 'distances'] }) => {
       if (!queryText || queryText.trim() === '') {
@@ -147,7 +92,10 @@ Examples:
 
       try {
         const client = await chromaClientManager.getClient();
-        const collection = await client.getCollection({ name: collectionName });
+        const collection = await client.getCollection({ 
+          name: collectionName,
+          embeddingFunction: new DefaultEmbeddingFunction()
+        });
 
         const queryParams: any = {
           queryTexts: [queryText],
@@ -197,46 +145,16 @@ Examples:
   );
 
   // Get Nearest Neighbors (alias for query with embedding)
-  server.registerTool(
+  server.tool(
     'getNearest',
+    'Get nearest neighbors using embedding vector',
     {
-      title: 'Get Nearest Neighbors',
-      description: 'Get nearest neighbors using embedding vector',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          collectionName: {
-            type: 'string',
-            description: 'Name of the collection to search',
-          },
-          queryEmbedding: {
-            type: 'array',
-            items: { type: 'number' },
-            description: 'Query embedding vector to search for nearest neighbors',
-          },
-          nResults: {
-            type: 'number',
-            description: 'Number of results to return',
-            default: 5,
-          },
-          where: {
-            type: 'object',
-            description: 'Optional metadata filters',
-          },
-          whereDocument: {
-            type: 'object',
-            description: 'Optional document content filters',
-          },
-          include: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'List of what to include in response',
-            default: ['documents', 'metadatas', 'distances'],
-          },
-        },
-        required: ['collectionName', 'queryEmbedding'],
-        additionalProperties: false,
-      },
+      collectionName: z.string().describe('Name of the collection to search'),
+      queryEmbedding: z.array(z.number()).describe('Query embedding vector to search for nearest neighbors'),
+      nResults: z.number().optional().default(5).describe('Number of results to return'),
+      where: z.record(z.any()).optional().describe('Optional metadata filters'),
+      whereDocument: z.record(z.any()).optional().describe('Optional document content filters'),
+      include: z.array(z.string()).optional().default(['documents', 'metadatas', 'distances']).describe('List of what to include in response'),
     },
     async ({ collectionName, queryEmbedding, nResults = 5, where, whereDocument, include = ['documents', 'metadatas', 'distances'] }) => {
       if (!queryEmbedding || queryEmbedding.length === 0) {
@@ -245,7 +163,10 @@ Examples:
 
       try {
         const client = await chromaClientManager.getClient();
-        const collection = await client.getCollection({ name: collectionName });
+        const collection = await client.getCollection({ 
+          name: collectionName,
+          embeddingFunction: new DefaultEmbeddingFunction()
+        });
 
         const queryParams: any = {
           queryEmbeddings: [queryEmbedding],

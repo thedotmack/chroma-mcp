@@ -5,7 +5,7 @@
  * Main entry point for the Model Context Protocol server
  */
 
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { Command } from 'commander';
 import dotenv from 'dotenv';
@@ -84,8 +84,8 @@ function validateConfig(config: ChromaConfig): void {
 }
 
 // Initialize the MCP server
-async function initializeServer(): Promise<Server> {
-  const server = new Server(
+async function initializeServer(): Promise<McpServer> {
+  const server = new McpServer(
     {
       name: 'chroma-mcp-ts',
       version: '1.0.0',

@@ -2,43 +2,21 @@
  * Document Operation Tools for Chroma MCP Server
  */
 
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { z } from 'zod';
 import { chromaClientManager } from '../client/chromaClient.js';
-import { AddDocumentParams, UpdateDocumentParams, GetResult } from '../types/chroma.js';
+import { DefaultEmbeddingFunction } from 'chromadb';
 
-export function registerDocumentTools(server: Server) {
+export function registerDocumentTools(server: McpServer) {
   // Add Documents
-  server.registerTool(
+  server.tool(
     'addDocuments',
+    'Add documents to a Chroma collection',
     {
-      title: 'Add Documents',
-      description: 'Add documents to a Chroma collection',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          collectionName: {
-            type: 'string',
-            description: 'Name of the collection to add documents to',
-          },
-          documents: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'List of text documents to add',
-          },
-          ids: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'List of IDs for the documents (required)',
-          },
-          metadatas: {
-            type: 'array',
-            items: { type: 'object' },
-            description: 'Optional list of metadata dictionaries for each document',
-          },
-        },
-        required: ['collectionName', 'documents', 'ids'],
-        additionalProperties: false,
-      },
+      collectionName: z.string().describe('Name of the collection to add documents to'),
+      documents: z.array(z.string()).describe('List of text documents to add'),
+      ids: z.array(z.string()).describe('List of IDs for the documents (required)'),
+      metadatas: z.array(z.record(z.any())).optional().describe('Optional list of metadata dictionaries for each document'),
     },
     async ({ collectionName, documents, ids, metadatas }) => {
       if (!documents || documents.length === 0) {
@@ -64,7 +42,10 @@ export function registerDocumentTools(server: Server) {
 
       try {
         const client = await chromaClientManager.getClient();
-        const collection = await client.getOrCreateCollection({ name: collectionName });
+        const collection = await client.getOrCreateCollection({ 
+          name: collectionName,
+          embeddingFunction: new DefaultEmbeddingFunction()
+        });
 
         // Check for duplicate IDs
         const existingDocuments = await collection.get({ ids });
@@ -104,54 +85,25 @@ export function registerDocumentTools(server: Server) {
   );
 
   // Get Documents
-  server.registerTool(
+  server.tool(
     'getDocuments',
+    'Get documents from a Chroma collection with optional filtering',
     {
-      title: 'Get Documents',
-      description: 'Get documents from a Chroma collection with optional filtering',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          collectionName: {
-            type: 'string',
-            description: 'Name of the collection to get documents from',
-          },
-          ids: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'Optional list of document IDs to retrieve',
-          },
-          where: {
-            type: 'object',
-            description: 'Optional metadata filters using Chroma query operators',
-          },
-          whereDocument: {
-            type: 'object',
-            description: 'Optional document content filters',
-          },
-          include: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'List of what to include in response',
-            default: ['documents', 'metadatas'],
-          },
-          limit: {
-            type: 'number',
-            description: 'Optional maximum number of documents to return',
-          },
-          offset: {
-            type: 'number',
-            description: 'Optional number of documents to skip before returning results',
-          },
-        },
-        required: ['collectionName'],
-        additionalProperties: false,
-      },
+      collectionName: z.string().describe('Name of the collection to get documents from'),
+      ids: z.array(z.string()).optional().describe('Optional list of document IDs to retrieve'),
+      where: z.record(z.any()).optional().describe('Optional metadata filters using Chroma query operators'),
+      whereDocument: z.record(z.any()).optional().describe('Optional document content filters'),
+      include: z.array(z.string()).optional().default(['documents', 'metadatas']).describe('List of what to include in response'),
+      limit: z.number().optional().describe('Optional maximum number of documents to return'),
+      offset: z.number().optional().describe('Optional number of documents to skip before returning results'),
     },
     async ({ collectionName, ids, where, whereDocument, include = ['documents', 'metadatas'], limit, offset }) => {
       try {
         const client = await chromaClientManager.getClient();
-        const collection = await client.getCollection({ name: collectionName });
+        const collection = await client.getCollection({ 
+          name: collectionName,
+          embeddingFunction: new DefaultEmbeddingFunction()
+        });
 
         const getParams: any = {
           include,
@@ -190,45 +142,15 @@ export function registerDocumentTools(server: Server) {
   );
 
   // Update Documents
-  server.registerTool(
+  server.tool(
     'updateDocuments',
+    'Update documents in a Chroma collection',
     {
-      title: 'Update Documents',
-      description: 'Update documents in a Chroma collection',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          collectionName: {
-            type: 'string',
-            description: 'Name of the collection to update documents in',
-          },
-          ids: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'List of document IDs to update (required)',
-          },
-          embeddings: {
-            type: 'array',
-            items: {
-              type: 'array',
-              items: { type: 'number' },
-            },
-            description: 'Optional list of new embeddings for the documents',
-          },
-          metadatas: {
-            type: 'array',
-            items: { type: 'object' },
-            description: 'Optional list of new metadata dictionaries for the documents',
-          },
-          documents: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'Optional list of new text documents',
-          },
-        },
-        required: ['collectionName', 'ids'],
-        additionalProperties: false,
-      },
+      collectionName: z.string().describe('Name of the collection to update documents in'),
+      ids: z.array(z.string()).describe('List of document IDs to update (required)'),
+      embeddings: z.array(z.array(z.number())).optional().describe('Optional list of new embeddings for the documents'),
+      metadatas: z.array(z.record(z.any())).optional().describe('Optional list of new metadata dictionaries for the documents'),
+      documents: z.array(z.string()).optional().describe('Optional list of new text documents'),
     },
     async ({ collectionName, ids, embeddings, metadatas, documents }) => {
       if (!ids || ids.length === 0) {
@@ -254,7 +176,10 @@ export function registerDocumentTools(server: Server) {
 
       try {
         const client = await chromaClientManager.getClient();
-        const collection = await client.getCollection({ name: collectionName });
+        const collection = await client.getCollection({ 
+          name: collectionName,
+          embeddingFunction: new DefaultEmbeddingFunction()
+        });
 
         const updateParams: any = { ids };
 
@@ -285,27 +210,12 @@ export function registerDocumentTools(server: Server) {
   );
 
   // Delete Documents
-  server.registerTool(
+  server.tool(
     'deleteDocuments',
+    'Delete documents from a Chroma collection',
     {
-      title: 'Delete Documents',
-      description: 'Delete documents from a Chroma collection',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          collectionName: {
-            type: 'string',
-            description: 'Name of the collection to delete documents from',
-          },
-          ids: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'List of document IDs to delete',
-          },
-        },
-        required: ['collectionName', 'ids'],
-        additionalProperties: false,
-      },
+      collectionName: z.string().describe('Name of the collection to delete documents from'),
+      ids: z.array(z.string()).describe('List of document IDs to delete'),
     },
     async ({ collectionName, ids }) => {
       if (!ids || ids.length === 0) {
@@ -314,7 +224,10 @@ export function registerDocumentTools(server: Server) {
 
       try {
         const client = await chromaClientManager.getClient();
-        const collection = await client.getCollection({ name: collectionName });
+        const collection = await client.getCollection({ 
+          name: collectionName,
+          embeddingFunction: new DefaultEmbeddingFunction()
+        });
 
         await collection.delete({ ids });
 
