@@ -6,9 +6,9 @@
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { registerCollectionTools } from '../src/tools/collections.js';
-import { registerDocumentTools } from '../src/tools/documents.js';
-import { registerQueryTools } from '../src/tools/queries.js';
+import { registerCollectionTools } from './tools/collections.js';
+import { registerDocumentTools } from './tools/documents.js';
+import { registerQueryTools } from './tools/queries.js';
 
 async function validateImplementation() {
   console.log('🔍 Validating Chroma MCP TypeScript Implementation...\n');

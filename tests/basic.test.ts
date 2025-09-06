@@ -5,43 +5,48 @@
 import { chromaClientManager } from '../src/client/chromaClient.js';
 import { ChromaConfig } from '../src/types/chroma.js';
 
-async function testBasicFunctionality() {
-  console.log('Testing Chroma MCP TypeScript Server...');
-
-  try {
-    // Test ephemeral client creation
+describe('Chroma MCP TypeScript Server', () => {
+  test('should create ephemeral ChromaDB client', async () => {
     const config: ChromaConfig = {
       clientType: 'ephemeral'
     };
 
     const client = await chromaClientManager.getClient(config);
-    console.log('✅ Successfully created ephemeral ChromaDB client');
+    expect(client).toBeDefined();
+  });
 
-    // Test basic operations
+  test('should list collections', async () => {
+    const config: ChromaConfig = {
+      clientType: 'ephemeral'
+    };
+
+    const client = await chromaClientManager.getClient(config);
     const collections = await client.listCollections();
-    console.log('✅ Successfully listed collections:', collections);
+    expect(Array.isArray(collections)).toBe(true);
+  });
 
-    // Test creating a collection
+  test('should create and delete collection', async () => {
+    const config: ChromaConfig = {
+      clientType: 'ephemeral'
+    };
+
+    const client = await chromaClientManager.getClient(config);
+    
+    // Create collection
     const testCollection = await client.createCollection({
       name: 'test-collection-ts'
     });
-    console.log('✅ Successfully created test collection');
+    expect(testCollection).toBeDefined();
 
-    // Test listing collections again
+    // Verify it exists
     const collectionsAfter = await client.listCollections();
-    console.log('✅ Collections after creation:', collectionsAfter);
+    expect(collectionsAfter.includes('test-collection-ts')).toBe(true);
 
     // Clean up
     await client.deleteCollection({ name: 'test-collection-ts' });
-    console.log('✅ Successfully deleted test collection');
-
-    console.log('\n🎉 All tests passed! TypeScript implementation is working correctly.');
-
-  } catch (error) {
-    console.error('❌ Test failed:', error instanceof Error ? error.message : 'Unknown error');
-    process.exit(1);
-  }
-}
-
-// Run the test
-testBasicFunctionality();
+    
+    // Verify it's deleted
+    const collectionsEnd = await client.listCollections();
+    expect(collectionsEnd.includes('test-collection-ts')).toBe(false);
+  });
+});
