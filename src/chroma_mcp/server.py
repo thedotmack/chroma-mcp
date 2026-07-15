@@ -3,6 +3,7 @@ from enum import Enum
 import chromadb
 from mcp.server.fastmcp import FastMCP
 import os
+import sys
 from dotenv import load_dotenv
 import argparse
 from chromadb.config import Settings
@@ -31,6 +32,13 @@ mcp = FastMCP("chroma")
 
 # Global variables
 _chroma_client = None
+# Args captured by main() so the client can be initialized lazily on the first
+# tool call rather than eagerly at startup (see main() for why).
+_chroma_client_args = None
+
+# Upper bound on how many documents are sent to Chroma in a single add()
+# request. Used when the client doesn't advertise its own max batch size.
+DEFAULT_ADD_BATCH_SIZE = 5000
 
 def create_parser():
     """Create and return the argument parser."""
@@ -74,10 +82,14 @@ def get_chroma_client(args=None):
     global _chroma_client
     if _chroma_client is None:
         if args is None:
+            # Prefer the args captured by main(); fall back to parsing argv so
+            # the client still works when tools are exercised directly.
+            args = _chroma_client_args
+        if args is None:
             # Create parser and parse args if not provided
             parser = create_parser()
             args = parser.parse_args()
-        
+
         # Load environment variables from .env file if it exists
         load_dotenv(dotenv_path=args.dotenv_path)
         if args.client_type == 'http':
@@ -100,10 +112,10 @@ def get_chroma_client(args=None):
                     settings=settings
                 )
             except ssl.SSLError as e:
-                print(f"SSL connection failed: {str(e)}")
+                print(f"SSL connection failed: {str(e)}", file=sys.stderr)
                 raise
             except Exception as e:
-                print(f"Error connecting to HTTP client: {str(e)}")
+                print(f"Error connecting to HTTP client: {str(e)}", file=sys.stderr)
                 raise
             
         elif args.client_type == 'cloud':
@@ -125,10 +137,10 @@ def get_chroma_client(args=None):
                     }
                 )
             except ssl.SSLError as e:
-                print(f"SSL connection failed: {str(e)}")
+                print(f"SSL connection failed: {str(e)}", file=sys.stderr)
                 raise
             except Exception as e:
-                print(f"Error connecting to cloud client: {str(e)}")
+                print(f"Error connecting to cloud client: {str(e)}", file=sys.stderr)
                 raise
                 
         elif args.client_type == 'persistent':
@@ -360,35 +372,37 @@ async def chroma_add_documents(
     client = get_chroma_client()
     try:
         collection = client.get_or_create_collection(collection_name)
-        
-        # Check for duplicate IDs
-        existing_ids = collection.get(include=[])["ids"]
+
+        # Check for duplicate IDs. Only fetch the IDs we're about to insert so
+        # this scales with the size of the batch, not the whole collection.
+        # Loading every existing ID (the previous behaviour) made large
+        # collections blow past the MCP host's tool-call timeout.
+        existing_ids = set(collection.get(ids=ids, include=[])["ids"])
         duplicate_ids = [id for id in ids if id in existing_ids]
-        
+
         if duplicate_ids:
             raise ValueError(
                 f"The following IDs already exist in collection '{collection_name}': {duplicate_ids}. "
                 f"Use 'chroma_update_documents' to update existing documents."
             )
-        
-        result = collection.add(
-            documents=documents,
-            metadatas=metadatas,
-            ids=ids
-        )
-        
-        # Check the return value
-        if result and isinstance(result, dict):
-            # If the return value is a dictionary, it may contain success information
-            if 'success' in result and not result['success']:
-                raise Exception(f"Failed to add documents: {result.get('error', 'Unknown error')}")
-            
-            # If the return value contains the actual number added
-            if 'count' in result:
-                return f"Successfully added {result['count']} documents to collection {collection_name}"
-        
-        # Default return
-        return f"Successfully added {len(documents)} documents to collection {collection_name}, result is {result}"
+
+        # Add in bounded batches so a single large request can't exceed
+        # Chroma's max batch size and to keep each round-trip predictable.
+        try:
+            max_batch_size = client.get_max_batch_size()
+        except Exception:
+            max_batch_size = DEFAULT_ADD_BATCH_SIZE
+        batch_size = max(1, min(max_batch_size or DEFAULT_ADD_BATCH_SIZE, DEFAULT_ADD_BATCH_SIZE))
+
+        for start in range(0, len(documents), batch_size):
+            end = start + batch_size
+            collection.add(
+                documents=documents[start:end],
+                metadatas=metadatas[start:end] if metadatas else None,
+                ids=ids[start:end],
+            )
+
+        return f"Successfully added {len(documents)} documents to collection {collection_name}"
     except Exception as e:
         raise Exception(f"Failed to add documents to collection '{collection_name}': {str(e)}") from e
 
@@ -630,41 +644,68 @@ def validate_thought_data(input_data: Dict) -> Dict:
         "needsMoreThoughts": input_data.get("needsMoreThoughts"),
     }
 
+def _missing_config_warnings(args) -> List[str]:
+    """Return human-readable warnings for config that will make tool calls fail.
+
+    These are surfaced as warnings only — never fatal — so the server always
+    starts and the problem shows up as a retryable tool-call error instead of
+    a process crash.
+    """
+    warnings = []
+    if args.client_type == 'http' and not args.host:
+        warnings.append(
+            "Host is not set (--host / CHROMA_HOST); HTTP client tool calls will fail until it is provided."
+        )
+    elif args.client_type == 'cloud':
+        if not args.tenant:
+            warnings.append(
+                "Tenant is not set (--tenant / CHROMA_TENANT); cloud client tool calls will fail until it is provided."
+            )
+        if not args.database:
+            warnings.append(
+                "Database is not set (--database / CHROMA_DATABASE); cloud client tool calls will fail until it is provided."
+            )
+        if not args.api_key:
+            warnings.append(
+                "API key is not set (--api-key / CHROMA_API_KEY); cloud client tool calls will fail until it is provided."
+            )
+    return warnings
+
 def main():
     """Entry point for the Chroma MCP server."""
+    global _chroma_client_args
     parser = create_parser()
     args = parser.parse_args()
-    
+
     if args.dotenv_path:
         load_dotenv(dotenv_path=args.dotenv_path)
         # re-parse args to read the updated environment variables
         parser = create_parser()
         args = parser.parse_args()
-    
-    # Validate required arguments based on client type
-    if args.client_type == 'http':
-        if not args.host:
-            parser.error("Host must be provided via --host flag or CHROMA_HOST environment variable when using HTTP client")
-    
-    elif args.client_type == 'cloud':
-        if not args.tenant:
-            parser.error("Tenant must be provided via --tenant flag or CHROMA_TENANT environment variable when using cloud client")
-        if not args.database:
-            parser.error("Database must be provided via --database flag or CHROMA_DATABASE environment variable when using cloud client")
-        if not args.api_key:
-            parser.error("API key must be provided via --api-key flag or CHROMA_API_KEY environment variable when using cloud client")
-    
-    # Initialize client with parsed args
-    try:
-        get_chroma_client(args)
-        print("Successfully initialized Chroma client")
-    except Exception as e:
-        print(f"Failed to initialize Chroma client: {str(e)}")
-        raise
-    
+
+    # Capture the parsed args and initialize the client lazily on the first
+    # tool call. We intentionally do NOT validate config or connect here.
+    #
+    # Doing that eagerly let any startup hiccup take down the whole process:
+    # missing config hit parser.error() (exit code 2) and a connection/SSL
+    # failure re-raised out of main() (exit code 1). The MCP host treats a
+    # process that exits during prewarm as a failed prewarm and drops the
+    # connection into backoff, producing an unrecoverable crash-loop.
+    #
+    # Deferring means a bad connection or missing setting surfaces as an
+    # ordinary tool-call error the agent can see and retry, while the server
+    # itself stays up.
+    _chroma_client_args = args
+
+    # Warn about config that will make tool calls fail, but keep running.
+    # Everything goes to stderr — stdout is the stdio MCP channel and writing
+    # to it corrupts the protocol.
+    for warning in _missing_config_warnings(args):
+        print(f"Warning: {warning}", file=sys.stderr)
+
     # Initialize and run the server
-    print("Starting MCP server")
+    print("Starting Chroma MCP server", file=sys.stderr)
     mcp.run(transport='stdio')
-    
+
 if __name__ == "__main__":
     main()
