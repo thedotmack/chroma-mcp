@@ -230,41 +230,42 @@ def test_client_type_validation():
     with pytest.raises(SystemExit):
         parser.parse_args(['--client-type', 'invalid'])
 
-def test_required_args_for_http_client():
-    """Test that required arguments are enforced for HTTP client."""
-    with patch('argparse.ArgumentParser.error') as mock_error:
+def test_missing_http_config_does_not_crash(mock_env_vars):
+    """Missing HTTP config must not abort the process: the server should still
+    start (client init is deferred) so the problem surfaces as a retryable
+    tool-call error rather than a prewarm crash-loop."""
+    os.environ.pop('CHROMA_HOST', None)
+    with patch('argparse.ArgumentParser.error') as mock_error, \
+         patch('chroma_mcp.server.mcp.run') as mock_run, \
+         patch('chroma_mcp.server._chroma_client_args', None):
         from chroma_mcp.server import main
-        
+
         # Set up command line args without required host
         sys.argv = ['chroma-mcp', '--client-type', 'http']
-        
-        try:
-            main()
-        except:
-            pass
-        
-        # Check that error was called for missing host
-        mock_error.assert_called_with(
-            "Host must be provided via --host flag or CHROMA_HOST environment variable when using HTTP client"
-        )
 
-def test_required_args_for_cloud_client():
-    """Test that required arguments are enforced for cloud client."""
-    with patch('argparse.ArgumentParser.error') as mock_error:
+        main()
+
+        # The process must not exit via parser.error() ...
+        mock_error.assert_not_called()
+        # ... and the server must still be started.
+        mock_run.assert_called_once()
+
+def test_missing_cloud_config_does_not_crash(mock_env_vars):
+    """Missing cloud config must not abort the process (see above)."""
+    for var in ('CHROMA_TENANT', 'CHROMA_DATABASE', 'CHROMA_API_KEY'):
+        os.environ.pop(var, None)
+    with patch('argparse.ArgumentParser.error') as mock_error, \
+         patch('chroma_mcp.server.mcp.run') as mock_run, \
+         patch('chroma_mcp.server._chroma_client_args', None):
         from chroma_mcp.server import main
-        
+
         # Set up command line args without required tenant/database/api-key
         sys.argv = ['chroma-mcp', '--client-type', 'cloud']
-        
-        try:
-            main()
-        except:
-            pass
-        
-        # Check that error was called for missing api-key (the first check in the code)
-        mock_error.assert_called_with(
-            "API key must be provided via --api-key flag or CHROMA_API_KEY environment variable when using cloud client"
-        )
+
+        main()
+
+        mock_error.assert_not_called()
+        mock_run.assert_called_once()
 
 # --- Tests for chroma_update_documents ---
 
@@ -413,6 +414,54 @@ async def test_update_documents_id_not_found():
         await mcp.call_tool("chroma_delete_collection", {"collection_name": collection_name})
 
 # --- Tests for chroma_delete_documents ---
+
+@pytest.mark.asyncio
+async def test_add_documents_duplicate_detection_is_bounded():
+    """Adding an already-present ID is rejected, and the duplicate check only
+    fetches the IDs being inserted (not the whole collection) so it stays fast
+    on large collections."""
+    collection_name = "test_add_duplicate_bounded"
+
+    try:
+        await mcp.call_tool("chroma_create_collection", {"collection_name": collection_name})
+        await mcp.call_tool("chroma_add_documents", {
+            "collection_name": collection_name,
+            "documents": ["doc a", "doc b", "doc c"],
+            "ids": ["a", "b", "c"],
+        })
+
+        # Spy on collection.get to assert the dedupe query is scoped by ids.
+        import chroma_mcp.server as server
+        real_client = server.get_chroma_client()
+        collection = real_client.get_or_create_collection(collection_name)
+        original_get = collection.get
+        captured = {}
+
+        def spy_get(*args, **kwargs):
+            captured["ids"] = kwargs.get("ids")
+            return original_get(*args, **kwargs)
+
+        with patch.object(server, "get_chroma_client") as mock_client_getter:
+            fake_client = MagicMock()
+            fake_client.get_or_create_collection.return_value = collection
+            fake_client.get_max_batch_size.side_effect = AttributeError
+            mock_client_getter.return_value = fake_client
+            collection.get = spy_get
+            try:
+                with pytest.raises(ToolError, match="already exist"):
+                    await mcp.call_tool("chroma_add_documents", {
+                        "collection_name": collection_name,
+                        "documents": ["new doc", "dup doc"],
+                        "ids": ["d", "b"],  # 'b' already exists
+                    })
+            finally:
+                collection.get = original_get
+
+        # The dedupe check must have been scoped to exactly the incoming ids.
+        assert captured["ids"] == ["d", "b"]
+
+    finally:
+        await mcp.call_tool("chroma_delete_collection", {"collection_name": collection_name})
 
 @pytest.mark.asyncio
 async def test_delete_documents_success():
