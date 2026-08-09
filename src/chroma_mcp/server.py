@@ -11,6 +11,7 @@ import ssl
 import uuid
 import time
 import json
+from urllib.parse import urlparse
 from typing_extensions import TypedDict
 
 
@@ -77,6 +78,50 @@ def create_parser():
                        default=os.getenv('CHROMA_DOTENV_PATH', '.chroma_env'))
     return parser
 
+def normalize_http_host_port(host, port):
+    """Split any scheme or port out of the host and coerce the port to an int.
+
+    Chroma builds its server URL by string concatenation, so a host that
+    already carries a scheme, an embedded port, or a trailing colon produces a
+    broken URL (for example "8000:8000" or "Invalid port: ':'"). Chroma also
+    runs int(port) on the value, so a None port raises TypeError. Clean both
+    values here and default the port to 8000 so a valid config always yields a
+    usable URL.
+
+    Raise a ValueError that names the host and port when the values still do
+    not make sense, so a bad config fails at client creation with a clear
+    message instead of a confusing error inside a later document write.
+    """
+    raw_host = (host or "").strip()
+
+    # urlparse only fills netloc when the value has a "//", so add one. This
+    # makes a bare "localhost:8000" parse as a host, not a scheme.
+    parsed = urlparse(raw_host if "//" in raw_host else "//" + raw_host)
+    hostname = parsed.hostname or raw_host.rstrip(":")
+
+    # An explicit --port wins over a port embedded in the host.
+    try:
+        embedded_port = parsed.port
+    except ValueError:
+        embedded_port = None
+    chosen_port = port if port not in (None, "") else embedded_port
+    if chosen_port in (None, ""):
+        chosen_port = 8000
+
+    if not hostname:
+        raise ValueError(
+            f"Invalid Chroma connection settings: host={host!r}, port={port!r}. "
+            f"Could not determine a host to connect to."
+        )
+    try:
+        port_int = int(chosen_port)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Invalid Chroma connection settings: host={host!r}, port={port!r}. "
+            f"Port must be an integer."
+        )
+    return hostname, port_int
+
 def get_chroma_client(args=None):
     """Get or create the global Chroma client instance."""
     global _chroma_client
@@ -103,11 +148,14 @@ def get_chroma_client(args=None):
                     chroma_client_auth_credentials=args.custom_auth_credentials
                 )
             
+            # Clean the host and port before Chroma concatenates them into a URL.
+            host, port = normalize_http_host_port(args.host, args.port)
+
             # Handle SSL configuration
             try:
                 _chroma_client = chromadb.HttpClient(
-                    host=args.host,
-                    port=args.port if args.port else None,
+                    host=host,
+                    port=port,
                     ssl=args.ssl,
                     settings=settings
                 )
