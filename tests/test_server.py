@@ -1,5 +1,5 @@
 import pytest
-from chroma_mcp.server import get_chroma_client, create_parser, mcp
+from chroma_mcp.server import get_chroma_client, create_parser, mcp, normalize_http_host_port
 import chromadb
 import sys
 import os
@@ -157,7 +157,7 @@ def test_http_client_creation(mock_http_client, mock_env_vars):
     mock_http_client.assert_called_once()
     call_kwargs = mock_http_client.call_args.kwargs
     assert call_kwargs['host'] == 'test-host'
-    assert call_kwargs['port'] == '8080'
+    assert call_kwargs['port'] == 8080
     assert call_kwargs['ssl'] is False
 
 @patch('chroma_mcp.server._chroma_client', None)  # Reset the global client
@@ -229,6 +229,37 @@ def test_client_type_validation():
     # Invalid client type
     with pytest.raises(SystemExit):
         parser.parse_args(['--client-type', 'invalid'])
+
+def test_normalize_http_host_port_defaults_port():
+    """A host with an unset port must default to 8000, not None (Chroma runs
+    int(port) and a None port raises TypeError)."""
+    assert normalize_http_host_port("127.0.0.1", None) == ("127.0.0.1", 8000)
+    assert normalize_http_host_port("127.0.0.1", "") == ("127.0.0.1", 8000)
+
+def test_normalize_http_host_port_strips_trailing_colon():
+    """A trailing colon in the host must not reach Chroma (it produced
+    'Invalid port: :')."""
+    assert normalize_http_host_port("127.0.0.1:", None) == ("127.0.0.1", 8000)
+
+def test_normalize_http_host_port_strips_embedded_port():
+    """An embedded port in the host must not be concatenated with --port (it
+    produced '8000:8000')."""
+    assert normalize_http_host_port("localhost:8000", "8000") == ("localhost", 8000)
+    assert normalize_http_host_port("localhost:8000", None) == ("localhost", 8000)
+
+def test_normalize_http_host_port_strips_scheme():
+    """A scheme in the host must be stripped so it is not glued into the URL."""
+    assert normalize_http_host_port("http://localhost:8000", None) == ("localhost", 8000)
+    assert normalize_http_host_port("https://chroma.example.com", None) == ("chroma.example.com", 8000)
+
+def test_normalize_http_host_port_coerces_port_to_int():
+    """A string port must be coerced to an int for Chroma."""
+    assert normalize_http_host_port("localhost", "9000") == ("localhost", 9000)
+
+def test_normalize_http_host_port_rejects_bad_port():
+    """A non-numeric port must raise a clear error that names host and port."""
+    with pytest.raises(ValueError, match="port='abc'"):
+        normalize_http_host_port("localhost", "abc")
 
 def test_missing_http_config_does_not_crash(mock_env_vars):
     """Missing HTTP config must not abort the process: the server should still
