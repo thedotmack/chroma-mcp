@@ -32,6 +32,34 @@ mcp = FastMCP("chroma")
 # Global variables
 _chroma_client = None
 
+_TRUE_VALUES = ['true', 'yes', '1', 't', 'y']
+_FALSE_VALUES = ['false', 'no', '0', 'f', 'n']
+
+def parse_ssl_verify(value):
+    """Parse an --ssl-verify value into a bool or a CA bundle path.
+
+    A true/false style string becomes a boolean. Any other value is a path to a
+    CA bundle file, which lets clients behind a TLS-inspecting proxy trust the
+    proxy root certificate.
+    """
+    lowered = value.strip().lower()
+    if lowered in _TRUE_VALUES:
+        return True
+    if lowered in _FALSE_VALUES:
+        return False
+    return value
+
+def is_ssl_cert_error(exc):
+    """Return True if the exception chain holds a TLS certificate failure."""
+    current = exc
+    while current is not None:
+        if isinstance(current, ssl.SSLError):
+            return True
+        if "CERTIFICATE_VERIFY_FAILED" in str(current):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
 def create_parser():
     """Create and return the argument parser."""
     parser = argparse.ArgumentParser(description='FastMCP server for Chroma DB')
@@ -60,10 +88,16 @@ def create_parser():
     parser.add_argument('--api-key', 
                        help='Chroma API key (required if tenant is provided)', 
                        default=os.getenv('CHROMA_API_KEY'))
-    parser.add_argument('--ssl', 
-                       help='Use SSL (optional for http client)', 
-                       type=lambda x: x.lower() in ['true', 'yes', '1', 't', 'y'],
-                       default=os.getenv('CHROMA_SSL', 'true').lower() in ['true', 'yes', '1', 't', 'y'])
+    parser.add_argument('--ssl',
+                       help='Use SSL (optional for http client)',
+                       type=lambda x: x.lower() in _TRUE_VALUES,
+                       default=os.getenv('CHROMA_SSL', 'true').lower() in _TRUE_VALUES)
+    parser.add_argument('--ssl-verify',
+                       help="Verify the server TLS certificate. Accepts 'true', 'false', or a "
+                            "path to a CA bundle. Set a CA bundle path or 'false' when a corporate "
+                            "proxy injects its own root certificate (optional for http and cloud clients)",
+                       type=parse_ssl_verify,
+                       default=parse_ssl_verify(os.getenv('CHROMA_SSL_VERIFY', 'true')))
     parser.add_argument('--dotenv-path', 
                        help='Path to .env file', 
                        default=os.getenv('CHROMA_DOTENV_PATH', '.chroma_env'))
@@ -84,13 +118,14 @@ def get_chroma_client(args=None):
             if not args.host:
                 raise ValueError("Host must be provided via --host flag or CHROMA_HOST environment variable when using HTTP client")
             
-            settings = Settings()
+            settings_kwargs = {}
             if args.custom_auth_credentials:
-                settings = Settings(
-                    chroma_client_auth_provider="chromadb.auth.basic_authn.BasicAuthClientProvider",
-                    chroma_client_auth_credentials=args.custom_auth_credentials
-                )
-            
+                settings_kwargs["chroma_client_auth_provider"] = "chromadb.auth.basic_authn.BasicAuthClientProvider"
+                settings_kwargs["chroma_client_auth_credentials"] = args.custom_auth_credentials
+            if args.ssl_verify is not None:
+                settings_kwargs["chroma_server_ssl_verify"] = args.ssl_verify
+            settings = Settings(**settings_kwargs)
+
             # Handle SSL configuration
             try:
                 _chroma_client = chromadb.HttpClient(
@@ -122,7 +157,8 @@ def get_chroma_client(args=None):
                     database=args.database,
                     headers={
                         'x-chroma-token': args.api_key
-                    }
+                    },
+                    settings=Settings(chroma_server_ssl_verify=args.ssl_verify)
                 )
             except ssl.SSLError as e:
                 print(f"SSL connection failed: {str(e)}")
@@ -390,6 +426,13 @@ async def chroma_add_documents(
         # Default return
         return f"Successfully added {len(documents)} documents to collection {collection_name}, result is {result}"
     except Exception as e:
+        if is_ssl_cert_error(e):
+            raise Exception(
+                f"Failed to add documents to collection '{collection_name}': TLS certificate "
+                f"verification failed ({str(e)}). If a corporate proxy or firewall injects its own "
+                f"root certificate, set --ssl-verify (or the CHROMA_SSL_VERIFY environment variable) "
+                f"to the path of the proxy CA bundle, or to 'false' to disable verification."
+            ) from e
         raise Exception(f"Failed to add documents to collection '{collection_name}': {str(e)}") from e
 
 @mcp.tool()

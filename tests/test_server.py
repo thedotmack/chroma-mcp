@@ -1,5 +1,12 @@
 import pytest
-from chroma_mcp.server import get_chroma_client, create_parser, mcp
+from chroma_mcp.server import (
+    get_chroma_client,
+    create_parser,
+    mcp,
+    parse_ssl_verify,
+    is_ssl_cert_error,
+)
+import ssl
 import chromadb
 import sys
 import os
@@ -160,6 +167,76 @@ def test_http_client_creation(mock_http_client, mock_env_vars):
     assert call_kwargs['port'] == '8080'
     assert call_kwargs['ssl'] is False
 
+def test_parse_ssl_verify():
+    """Test that --ssl-verify values map to bools or a CA bundle path."""
+    for true_val in ['true', 'yes', '1', 't', 'y', 'True']:
+        assert parse_ssl_verify(true_val) is True
+    for false_val in ['false', 'no', '0', 'f', 'n', 'False']:
+        assert parse_ssl_verify(false_val) is False
+    # Any other value is treated as a CA bundle path
+    assert parse_ssl_verify('/etc/ssl/certs/corporate-ca.pem') == '/etc/ssl/certs/corporate-ca.pem'
+
+def test_ssl_verify_defaults_true():
+    """Test that --ssl-verify defaults to True."""
+    parser = create_parser()
+    args = parser.parse_args(['--client-type', 'ephemeral'])
+    assert args.ssl_verify is True
+
+def test_ssl_verify_ca_bundle_path():
+    """Test that a CA bundle path is parsed as a string."""
+    parser = create_parser()
+    args = parser.parse_args(['--client-type', 'http', '--host', 'h',
+                              '--ssl-verify', '/etc/ssl/certs/corporate-ca.pem'])
+    assert args.ssl_verify == '/etc/ssl/certs/corporate-ca.pem'
+
+@patch.dict(os.environ, {'CHROMA_SSL_VERIFY': 'false'})
+def test_ssl_verify_env_var():
+    """Test that CHROMA_SSL_VERIFY overrides the default."""
+    parser = create_parser()
+    args = parser.parse_args([])
+    assert args.ssl_verify is False
+
+def test_is_ssl_cert_error():
+    """Test that certificate failures are detected across the exception chain."""
+    assert is_ssl_cert_error(ssl.SSLError("boom")) is True
+    wrapped = ConnectionError("[SSL: CERTIFICATE_VERIFY_FAILED] bad cert")
+    assert is_ssl_cert_error(wrapped) is True
+    # A chained cause is inspected too
+    try:
+        try:
+            raise ssl.SSLError("inner")
+        except ssl.SSLError as inner:
+            raise RuntimeError("outer") from inner
+    except RuntimeError as outer:
+        assert is_ssl_cert_error(outer) is True
+    assert is_ssl_cert_error(ValueError("unrelated")) is False
+
+@patch('chroma_mcp.server._chroma_client', None)  # Reset the global client
+@patch('chromadb.HttpClient')
+def test_http_client_ssl_verify_setting(mock_http_client, mock_env_vars):
+    """Test that --ssl-verify is threaded into the http client Settings."""
+    mock_http_client.return_value = MagicMock()
+    sys.argv = ['chroma-mcp', '--client-type', 'http', '--host', 'test-host',
+                '--ssl-verify', '/etc/ssl/certs/corporate-ca.pem']
+
+    get_chroma_client()
+
+    settings = mock_http_client.call_args.kwargs['settings']
+    assert settings.chroma_server_ssl_verify == '/etc/ssl/certs/corporate-ca.pem'
+
+@patch('chroma_mcp.server._chroma_client', None)  # Reset the global client
+@patch('chromadb.HttpClient')
+def test_cloud_client_ssl_verify_setting(mock_http_client, mock_env_vars):
+    """Test that --ssl-verify is threaded into the cloud client Settings."""
+    mock_http_client.return_value = MagicMock()
+    sys.argv = ['chroma-mcp', '--client-type', 'cloud', '--tenant', 't',
+                '--database', 'd', '--api-key', 'k', '--ssl-verify', 'false']
+
+    get_chroma_client()
+
+    settings = mock_http_client.call_args.kwargs['settings']
+    assert settings.chroma_server_ssl_verify is False
+
 @patch('chroma_mcp.server._chroma_client', None)  # Reset the global client
 @patch('chromadb.HttpClient')
 def test_cloud_client_creation(mock_http_client, mock_env_vars):
@@ -216,6 +293,26 @@ def test_ephemeral_client_creation(mock_ephemeral_client, mock_env_vars):
     
     # Check that EphemeralClient was called
     mock_ephemeral_client.assert_called_once()
+
+@pytest.mark.asyncio
+@patch('chroma_mcp.server.get_chroma_client')
+async def test_add_documents_ssl_cert_error_message(mock_get_client):
+    """Test that a certificate failure names the --ssl-verify option."""
+    mock_client = MagicMock()
+    mock_client.get_or_create_collection.side_effect = ssl.SSLError(
+        "[SSL: CERTIFICATE_VERIFY_FAILED] Basic Constraints of CA cert not marked critical"
+    )
+    mock_get_client.return_value = mock_client
+
+    with pytest.raises(Exception) as exc_info:
+        await mcp.call_tool(
+            "chroma_add_documents",
+            {"collection_name": "c", "documents": ["d"], "ids": ["1"]},
+        )
+
+    message = str(exc_info.value)
+    assert "--ssl-verify" in message
+    assert "CHROMA_SSL_VERIFY" in message
 
 def test_client_type_validation():
     """Test validation of client type argument."""
