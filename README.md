@@ -151,6 +151,8 @@ production/deployment), add the following to your `claude_desktop_config.json` f
 
 This will create an HTTP client that connects to your self-hosted Chroma instance.
 
+**TLS-inspecting proxies:** `--ssl` only selects `http` vs `https`; it does not control certificate trust. Behind a corporate proxy that injects its own root certificate, requests fail with `CERTIFICATE_VERIFY_FAILED`. Use `--ssl-verify` (or the `CHROMA_SSL_VERIFY` environment variable) to fix this. It accepts `true` (the default), `false` to disable verification, or a path to the proxy CA bundle, for example `"--ssl-verify", "/etc/ssl/certs/corporate-ca.pem"`. This option applies to both the `http` and `cloud` clients.
+
 ### Demos
 
 Find reference usages, such as shared knowledge bases & adding memory to context windows in the [Chroma MCP Docs](https://docs.trychroma.com/integrations/frameworks/anthropic-mcp#using-chroma-with-claude)
@@ -176,6 +178,7 @@ export CHROMA_HOST="your-host"
 export CHROMA_PORT="your-port"
 export CHROMA_CUSTOM_AUTH_CREDENTIALS="your-custom-auth-credentials"
 export CHROMA_SSL="true"
+export CHROMA_SSL_VERIFY="true"  # "true", "false", or a path to a CA bundle
 
 # Optional: Specify path to .env file (defaults to .chroma_env)
 export CHROMA_DOTENV_PATH="/path/to/your/.env" 
