@@ -32,6 +32,37 @@ mcp = FastMCP("chroma")
 # Global variables
 _chroma_client = None
 
+def describe_client_environment_error(exc) -> str | None:
+    """Return an actionable message when a request failed because the Python
+    environment cannot reach Chroma, or None when the cause is something else.
+
+    Two environment faults otherwise look like a generic collection error: an
+    inherited SOCKS proxy without the 'socksio' package, and a half-installed
+    httpx stack that is missing a transport module such as httpcore. Both fail
+    only on the first request because the client is built lazily, so the SSL
+    handlers in get_chroma_client never see them.
+    """
+    current = exc
+    seen = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if "socks" in str(current).lower():
+            return (
+                "a SOCKS proxy is set for this process (for example the ALL_PROXY "
+                "or HTTPS_PROXY environment variable) but SOCKS support for httpx "
+                "is not installed. Reinstall this server's dependencies, which now "
+                "include httpx[socks], or unset the proxy variable."
+            )
+        if isinstance(current, ImportError):
+            module = getattr(current, "name", None) or str(current)
+            return (
+                f"a required module is missing ({module}); the httpx HTTP stack is "
+                "only partly installed. Reinstall this server's dependencies to "
+                "restore it."
+            )
+        current = current.__cause__ or current.__context__
+    return None
+
 def create_parser():
     """Create and return the argument parser."""
     parser = argparse.ArgumentParser(description='FastMCP server for Chroma DB')
@@ -390,6 +421,12 @@ async def chroma_add_documents(
         # Default return
         return f"Successfully added {len(documents)} documents to collection {collection_name}, result is {result}"
     except Exception as e:
+        detail = describe_client_environment_error(e)
+        if detail is not None:
+            raise Exception(
+                f"Failed to add documents to collection '{collection_name}': {detail} "
+                f"Original error: {str(e)}"
+            ) from e
         raise Exception(f"Failed to add documents to collection '{collection_name}': {str(e)}") from e
 
 @mcp.tool()
