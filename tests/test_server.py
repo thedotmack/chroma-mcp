@@ -1,5 +1,10 @@
 import pytest
-from chroma_mcp.server import get_chroma_client, create_parser, mcp
+from chroma_mcp.server import (
+    get_chroma_client,
+    create_parser,
+    mcp,
+    describe_client_environment_error,
+)
 import chromadb
 import sys
 import os
@@ -265,6 +270,77 @@ def test_required_args_for_cloud_client():
         mock_error.assert_called_with(
             "API key must be provided via --api-key flag or CHROMA_API_KEY environment variable when using cloud client"
         )
+
+# --- Tests for environment error classification ---
+
+def test_describe_client_environment_error_socks():
+    """A missing SOCKS package must be named, not flattened."""
+    exc = ImportError(
+        "Using SOCKS proxy, but the 'socksio' package is not installed."
+    )
+    message = describe_client_environment_error(exc)
+    assert message is not None
+    assert "SOCKS proxy" in message
+    assert "httpx[socks]" in message
+
+def test_describe_client_environment_error_missing_module():
+    """A missing transport module must name the module."""
+    message = describe_client_environment_error(ModuleNotFoundError("No module named 'httpcore'"))
+    assert message is not None
+    assert "httpcore" in message
+
+def test_describe_client_environment_error_chained_cause():
+    """The cause chain must be inspected, not just the top exception."""
+    try:
+        try:
+            raise ModuleNotFoundError("No module named 'httpcore'")
+        except ModuleNotFoundError as inner:
+            raise RuntimeError("request failed") from inner
+    except RuntimeError as outer:
+        assert describe_client_environment_error(outer) is not None
+
+def test_describe_client_environment_error_unrelated():
+    """An unrelated failure must not be misreported as an environment fault."""
+    assert describe_client_environment_error(ValueError("collection not found")) is None
+
+@pytest.mark.asyncio
+@patch('chroma_mcp.server.get_chroma_client')
+async def test_add_documents_socks_error_message(mock_get_client):
+    """A SOCKS proxy failure during add must name httpx[socks], not just the
+    collection."""
+    mock_client = MagicMock()
+    mock_client.get_or_create_collection.side_effect = ImportError(
+        "Using SOCKS proxy, but the 'socksio' package is not installed."
+    )
+    mock_get_client.return_value = mock_client
+
+    with pytest.raises(Exception) as exc_info:
+        await mcp.call_tool(
+            "chroma_add_documents",
+            {"collection_name": "c", "documents": ["d"], "ids": ["1"]},
+        )
+
+    message = str(exc_info.value)
+    assert "httpx[socks]" in message
+    assert "SOCKS proxy" in message
+
+@pytest.mark.asyncio
+@patch('chroma_mcp.server.get_chroma_client')
+async def test_add_documents_missing_module_message(mock_get_client):
+    """A missing transport module during add must name the module."""
+    mock_client = MagicMock()
+    mock_client.get_or_create_collection.side_effect = ModuleNotFoundError(
+        "No module named 'httpcore'"
+    )
+    mock_get_client.return_value = mock_client
+
+    with pytest.raises(Exception) as exc_info:
+        await mcp.call_tool(
+            "chroma_add_documents",
+            {"collection_name": "c", "documents": ["d"], "ids": ["1"]},
+        )
+
+    assert "httpcore" in str(exc_info.value)
 
 # --- Tests for chroma_update_documents ---
 
